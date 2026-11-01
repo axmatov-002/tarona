@@ -1,5 +1,5 @@
 import React, { useState, useEffect, useRef, useMemo, useCallback } from 'react';
-import { musicDB } from './services/db';
+import { musicDB, adminLogger } from './services/db';
 import { generateUUID } from './utils/formatters';
 import { generateSampleMelodyBlob } from './utils/audioSynthesizer';
 
@@ -13,6 +13,9 @@ import PlayerBar from './components/PlayerBar';
 import Toast from './components/Toast';
 import ConfirmModal from './components/ConfirmModal';
 
+import AdminPanel from './components/AdminPanel/AdminPanel';
+import AdminAuthModal from './components/AdminPanel/AdminAuthModal';
+
 const STORAGE_KEYS = {
   VOLUME: 'musiqa_react_vol',
   LAST_TRACK_ID: 'musiqa_last_track_id',
@@ -21,10 +24,13 @@ const STORAGE_KEYS = {
   REPEAT: 'musiqa_last_repeat'
 };
 
+const RATES = [1.0, 1.25, 1.5, 2.0, 0.75];
+
 export default function App() {
   // Audio & Web Audio API Refs
   const audioRef = useRef(null);
   const fileInputRef = useRef(null);
+  const backupFileInputRef = useRef(null);
   const audioContextRef = useRef(null);
   const analyserRef = useRef(null);
   const sourceNodeRef = useRef(null);
@@ -36,6 +42,13 @@ export default function App() {
   const [searchQuery, setSearchQuery] = useState('');
   const [sortBy, setSortBy] = useState('newest');
   const [storageBytes, setStorageBytes] = useState(0);
+
+  // Admin Mode State
+  const [isAdminMode, setIsAdminMode] = useState(false);
+  const [adminTab, setAdminTab] = useState('dashboard'); // 'dashboard' | 'tracks' | 'storage' | 'settings'
+  const [isAuthModalOpen, setIsAuthModalOpen] = useState(false);
+  const [pendingAdminTab, setPendingAdminTab] = useState('dashboard');
+  const [activityLogs, setActivityLogs] = useState(() => adminLogger.getLogs());
 
   // Playback State
   const [currentTrackIndex, setCurrentTrackIndex] = useState(-1);
@@ -55,7 +68,6 @@ export default function App() {
     return localStorage.getItem(STORAGE_KEYS.REPEAT) || 'off';
   });
   const [rateIndex, setRateIndex] = useState(0);
-  const rates = [1.0, 1.25, 1.5, 2.0, 0.75];
 
   // UI Feedback State
   const [toasts, setToasts] = useState([]);
@@ -166,7 +178,7 @@ export default function App() {
     return () => window.removeEventListener('beforeunload', handleBeforeUnload);
   }, []);
 
-  // Filtered & Sorted Tracks
+  // Filtered & Sorted Tracks (for Main Player View)
   const filteredTracks = useMemo(() => {
     let list = [...tracks];
 
@@ -219,7 +231,7 @@ export default function App() {
         currentBlobUrlRef.current = url;
         if (audioRef.current) {
           audioRef.current.src = url;
-          audioRef.current.playbackRate = rates[rateIndex];
+          audioRef.current.playbackRate = RATES[rateIndex];
           try {
             await audioRef.current.play();
             setIsPlaying(true);
@@ -233,7 +245,7 @@ export default function App() {
         showToast('Audio fayl topilmadi', 'error');
       }
 
-      // MediaSession API for Windows background playback controls
+      // MediaSession API
       if ('mediaSession' in navigator) {
         navigator.mediaSession.metadata = new MediaMetadata({
           title: track.title,
@@ -249,7 +261,44 @@ export default function App() {
         });
       }
     },
-    [filteredTracks, rateIndex, rates, showToast]
+    [filteredTracks, rateIndex, showToast]
+  );
+
+  // Play track by ID (for Admin panel and search results)
+  const playTrackById = useCallback(
+    async (trackId) => {
+      const trackIndex = tracks.findIndex((t) => t.id === trackId);
+      if (trackIndex === -1) return;
+      const track = tracks[trackIndex];
+
+      setCurrentTrackIndex(trackIndex);
+      setCurrentTrack(track);
+
+      if (currentBlobUrlRef.current) {
+        URL.revokeObjectURL(currentBlobUrlRef.current);
+        currentBlobUrlRef.current = null;
+      }
+
+      if (track.blob instanceof Blob) {
+        const url = URL.createObjectURL(track.blob);
+        currentBlobUrlRef.current = url;
+        if (audioRef.current) {
+          audioRef.current.src = url;
+          audioRef.current.playbackRate = RATES[rateIndex];
+          try {
+            await audioRef.current.play();
+            setIsPlaying(true);
+            initAudioContext();
+          } catch (err) {
+            console.warn("Avtomatik ijro to'xtatildi:", err);
+            setIsPlaying(false);
+          }
+        }
+      } else {
+        showToast('Audio fayl topilmadi', 'error');
+      }
+    },
+    [tracks, rateIndex, showToast]
   );
 
   const togglePlayPause = () => {
@@ -340,9 +389,9 @@ export default function App() {
   };
 
   const cycleSpeed = () => {
-    const nextIndex = (rateIndex + 1) % rates.length;
+    const nextIndex = (rateIndex + 1) % RATES.length;
     setRateIndex(nextIndex);
-    const newRate = rates[nextIndex];
+    const newRate = RATES[nextIndex];
     if (audioRef.current) {
       audioRef.current.playbackRate = newRate;
     }
@@ -394,6 +443,7 @@ export default function App() {
           id: generateUUID(),
           title: metadata.title,
           artist: metadata.artist,
+          genre: 'Minecraft OST',
           duration: metadata.duration,
           size: file.size,
           type: file.type || 'audio/mp3',
@@ -411,6 +461,12 @@ export default function App() {
 
     if (addedCount > 0) {
       showToast(`${addedCount} ta qo'shiq muvaffaqiyatli saqlandi!`, 'success');
+      const updatedLogs = adminLogger.addLog(
+        "Disk yuklandi",
+        `${addedCount} ta yangi musiqa diski xotiraga saqlandi`,
+        "success"
+      );
+      setActivityLogs(updatedLogs);
       await loadLibrary();
     } else {
       showToast("Hech qanday to'g'ri audio fayl tanlanmadi", 'error');
@@ -461,6 +517,7 @@ export default function App() {
         id: generateUUID(),
         title: 'C418 - Sweden (Noteblock Remix)',
         artist: 'Minecraft Jukebox Studio',
+        genre: 'C418 / Noteblock',
         duration: 18,
         size: wavBlob.size,
         type: 'audio/wav',
@@ -470,6 +527,12 @@ export default function App() {
       };
 
       await musicDB.saveTrack(sampleTrack);
+      const updatedLogs = adminLogger.addLog(
+        "Ohang generatsiya qilindi",
+        "C418 Noteblock ohangi yaratildi va xotiraga kiritildi",
+        "success"
+      );
+      setActivityLogs(updatedLogs);
       await loadLibrary();
       showToast('Namuna musiqa yaratildi va IndexedDB ga saqlandi!', 'success');
 
@@ -538,6 +601,12 @@ export default function App() {
           localStorage.removeItem(STORAGE_KEYS.LAST_TRACK_ID);
           localStorage.removeItem(STORAGE_KEYS.LAST_TIME);
         }
+        const updatedLogs = adminLogger.addLog(
+          "Disk o'chirildi",
+          `"${track.title}" diski kutubxonadan o'chirildi`,
+          "danger"
+        );
+        setActivityLogs(updatedLogs);
         await loadLibrary();
         setModalState((prev) => ({ ...prev, isOpen: false }));
         showToast("Musiqa o'chirildi", 'info');
@@ -549,7 +618,7 @@ export default function App() {
   const handleClearAll = () => {
     setModalState({
       isOpen: true,
-      title: "Barcha musiqalarni o'chirish",
+      title: "Barcha musiqalarni o'chirish (TNT)",
       desc: "Xotiradagi barcha musiqalar butunlay o'chiriladi. Ushbu amalni ortga qaytarib bo'lmaydi!",
       onConfirm: async () => {
         await musicDB.clearAll();
@@ -564,11 +633,236 @@ export default function App() {
         setDuration(0);
         localStorage.removeItem(STORAGE_KEYS.LAST_TRACK_ID);
         localStorage.removeItem(STORAGE_KEYS.LAST_TIME);
+        const updatedLogs = adminLogger.addLog(
+          "TNT Tozalash",
+          "Kutubxonadagi barcha musiqalar tozalab tashlandi",
+          "danger"
+        );
+        setActivityLogs(updatedLogs);
         await loadLibrary();
         setModalState((prev) => ({ ...prev, isOpen: false }));
         showToast("Barcha musiqalar o'chirildi", 'info');
       }
     });
+  };
+
+  // ==========================================
+  // Admin Operations Handlers
+  // ==========================================
+  const handleOpenAdmin = (targetTab = 'dashboard') => {
+    const isPinRequired = localStorage.getItem('musiqa_admin_pin_required') !== 'false';
+    const isAuthed = sessionStorage.getItem('musiqa_admin_auth') === 'true';
+
+    if (isPinRequired && !isAuthed) {
+      setPendingAdminTab(targetTab);
+      setIsAuthModalOpen(true);
+    } else {
+      setIsAdminMode(true);
+      setAdminTab(targetTab);
+    }
+  };
+
+  const handleAuthSuccess = () => {
+    setIsAuthModalOpen(false);
+    setIsAdminMode(true);
+    setAdminTab(pendingAdminTab || 'dashboard');
+    showToast("Admin boshqaruv tizimiga muvaffaqiyatli kirildi!", 'success');
+    const logs = adminLogger.addLog("Kirish muvaffaqiyatli", "Admin tizimiga muvaffaqiyatli kirildi", "info");
+    setActivityLogs(logs);
+  };
+
+  const handleExitAdmin = () => {
+    setIsAdminMode(false);
+  };
+
+  const handleUpdateTrack = async (trackId, updates) => {
+    try {
+      await musicDB.updateTrack(trackId, updates);
+      if (currentTrack && currentTrack.id === trackId) {
+        setCurrentTrack((prev) => ({ ...prev, ...updates }));
+      }
+      const logs = adminLogger.addLog(
+        "Tahrirlandi",
+        `"${updates.title}" diski ma'lumotlari yangilandi`,
+        "info"
+      );
+      setActivityLogs(logs);
+      await loadLibrary();
+      showToast("Disk ma'lumotlari muvaffaqiyatli saqlandi!", 'success');
+    } catch (err) {
+      console.error(err);
+      showToast("Saqlashda xatolik yuz berdi", 'error');
+    }
+  };
+
+  const handleBatchDelete = (ids) => {
+    if (!ids || ids.length === 0) return;
+    setModalState({
+      isOpen: true,
+      title: "Tanlangan disklarni o'chirish",
+      desc: `Haqiqatan ham tanlangan ${ids.length} ta diskni xotiradan butunlay o'chirmoqchimisiz?`,
+      onConfirm: async () => {
+        await musicDB.deleteMultiple(ids);
+        if (currentTrack && ids.includes(currentTrack.id)) {
+          if (audioRef.current) {
+            audioRef.current.pause();
+            audioRef.current.src = '';
+          }
+          setCurrentTrack(null);
+          setCurrentTrackIndex(-1);
+          setIsPlaying(false);
+          setCurrentTime(0);
+          setDuration(0);
+          localStorage.removeItem(STORAGE_KEYS.LAST_TRACK_ID);
+          localStorage.removeItem(STORAGE_KEYS.LAST_TIME);
+        }
+        const logs = adminLogger.addLog(
+          "Ommaviy o'chirildi",
+          `${ids.length} ta disk xotiradan o'chirildi`,
+          "danger"
+        );
+        setActivityLogs(logs);
+        await loadLibrary();
+        setModalState((prev) => ({ ...prev, isOpen: false }));
+        showToast(`${ids.length} ta disk muvaffaqiyatli o'chirildi`, 'info');
+      }
+    });
+  };
+
+  const handleBatchFavorite = async (ids) => {
+    if (!ids || ids.length === 0) return;
+    try {
+      for (const id of ids) {
+        const track = await musicDB.getTrack(id);
+        if (track && !track.isFavorite) {
+          track.isFavorite = true;
+          await musicDB.saveTrack(track);
+        }
+      }
+      const logs = adminLogger.addLog(
+        "Ommaviy sevimlilar",
+        `${ids.length} ta disk sevimlilar ro'yxatiga qo'shildi`,
+        "success"
+      );
+      setActivityLogs(logs);
+      await loadLibrary();
+      showToast(`${ids.length} ta disk sevimlilarga qo'shildi!`, 'success');
+    } catch (e) {
+      showToast("Amalni bajarishda xatolik yuz berdi", 'error');
+    }
+  };
+
+  const handleBatchDownload = (ids) => {
+    if (!ids || ids.length === 0) return;
+    const selectedTracks = tracks.filter((t) => ids.includes(t.id));
+    selectedTracks.forEach((track, i) => {
+      setTimeout(() => {
+        handleDownloadTrack(track);
+      }, i * 350);
+    });
+  };
+
+  // Export JSON metadata backup
+  const handleExportBackup = () => {
+    try {
+      const exportData = {
+        app: 'Musiqa Hub (Minecraft Edition)',
+        version: '2.0',
+        exportedAt: new Date().toISOString(),
+        totalTracks: tracks.length,
+        tracks: tracks.map((t) => ({
+          id: t.id,
+          title: t.title,
+          artist: t.artist,
+          genre: t.genre || 'Minecraft OST',
+          duration: t.duration,
+          size: t.size,
+          type: t.type,
+          addedAt: t.addedAt,
+          isFavorite: t.isFavorite
+        }))
+      };
+
+      const jsonStr = JSON.stringify(exportData, null, 2);
+      const blob = new Blob([jsonStr], { type: 'application/json' });
+      const url = URL.createObjectURL(blob);
+      const a = document.createElement('a');
+      a.href = url;
+      const today = new Date().toISOString().slice(0, 10);
+      a.download = `musiqa_hub_backup_${today}.json`;
+      document.body.appendChild(a);
+      a.click();
+      document.body.removeChild(a);
+      setTimeout(() => URL.revokeObjectURL(url), 2000);
+
+      const logs = adminLogger.addLog(
+        "Zaxira eksport qilindi",
+        `${tracks.length} ta disk metama'lumotlari JSON formatda eksport qilindi`,
+        "success"
+      );
+      setActivityLogs(logs);
+      showToast("Kutubxona zaxirasi JSON fayl sifatida yuklab olindi!", 'success');
+    } catch (err) {
+      console.error(err);
+      showToast("Zaxiralashda xatolik yuz berdi", 'error');
+    }
+  };
+
+  const handleImportBackup = () => {
+    backupFileInputRef.current?.click();
+  };
+
+  const handleBackupFileSelected = (e) => {
+    const file = e.target.files?.[0];
+    if (!file) return;
+
+    const reader = new FileReader();
+    reader.onload = async (evt) => {
+      try {
+        const parsed = JSON.parse(evt.target.result);
+        const importedTracks = Array.isArray(parsed) ? parsed : parsed.tracks;
+        if (!Array.isArray(importedTracks)) {
+          showToast("Noto'g'ri JSON zaxira fayli formati", 'error');
+          return;
+        }
+
+        let updatedCount = 0;
+        for (const item of importedTracks) {
+          if (!item.id || !item.title) continue;
+          const existing = await musicDB.getTrack(item.id);
+          if (existing) {
+            existing.title = item.title;
+            existing.artist = item.artist || existing.artist;
+            existing.genre = item.genre || existing.genre;
+            existing.isFavorite = item.isFavorite ?? existing.isFavorite;
+            await musicDB.saveTrack(existing);
+            updatedCount++;
+          }
+        }
+
+        const logs = adminLogger.addLog(
+          "Zaxira tiklandi",
+          `${updatedCount} ta disk metama'lumotlari zaxiradan yangilandi`,
+          "success"
+        );
+        setActivityLogs(logs);
+        await loadLibrary();
+        showToast(`${updatedCount} ta disk ma'lumotlari yangilandi!`, 'success');
+      } catch (err) {
+        console.error(err);
+        showToast("JSON faylini o'qishda xatolik yuz berdi", 'error');
+      }
+    };
+    reader.readAsText(file);
+    if (backupFileInputRef.current) {
+      backupFileInputRef.current.value = '';
+    }
+  };
+
+  const handleClearLogs = () => {
+    adminLogger.clearLogs();
+    setActivityLogs([]);
+    showToast("Admin harakatlar tarixi tozalandi", 'info');
   };
 
   // Keyboard Shortcuts
@@ -634,13 +928,17 @@ export default function App() {
       <Sidebar
         activeTab={activeTab}
         setActiveTab={setActiveTab}
+        isAdminMode={isAdminMode}
+        adminTab={adminTab}
+        onOpenAdmin={handleOpenAdmin}
+        onExitAdmin={handleExitAdmin}
         totalCount={tracks.length}
         favCount={tracks.filter((t) => t.isFavorite).length}
         storageMB={storageMB}
         onUploadClick={() => fileInputRef.current?.click()}
       />
 
-      {/* Main Content */}
+      {/* Main Content Area */}
       <main className="main-content">
         <TopBar
           searchQuery={searchQuery}
@@ -649,47 +947,93 @@ export default function App() {
           onUploadClick={() => fileInputRef.current?.click()}
           fileInputRef={fileInputRef}
           onFilesSelected={handleFilesUpload}
+          isAdminMode={isAdminMode}
+          onOpenAdmin={handleOpenAdmin}
+          onExitAdmin={handleExitAdmin}
         />
 
-        <div className="content-scrollable">
-          <HeroSection
-            onPlayAll={() => (filteredTracks.length > 0 ? playTrackByIndex(0) : showToast('Ijro etish uchun avval musiqa yuklang', 'info'))}
-            onUploadClick={() => fileInputRef.current?.click()}
+        {isAdminMode ? (
+          /* Admin Panel View */
+          <AdminPanel
+            tracks={tracks}
+            storageMB={storageMB}
+            currentTrack={currentTrack}
             isPlaying={isPlaying}
-            analyserNode={analyserRef.current}
-          />
-
-          <Dropzone
-            onFilesDrop={handleFilesUpload}
+            adminTab={adminTab}
+            setAdminTab={setAdminTab}
+            onExitAdmin={handleExitAdmin}
+            onPlayTrackById={playTrackById}
+            onUpdateTrack={handleUpdateTrack}
+            onDeleteTrack={handleDeleteTrack}
+            onToggleFavorite={handleToggleFavorite}
+            onDownloadTrack={handleDownloadTrack}
+            onBatchDelete={handleBatchDelete}
+            onBatchFavorite={handleBatchFavorite}
+            onBatchDownload={handleBatchDownload}
             onUploadClick={() => fileInputRef.current?.click()}
+            onGenerateSample={handleGenerateSample}
+            onExportBackup={handleExportBackup}
+            onImportBackup={handleImportBackup}
+            onClearAll={handleClearAll}
+            activityLogs={activityLogs}
+            onClearLogs={handleClearLogs}
+            showToast={showToast}
           />
-
-          {filteredTracks.length > 0 ? (
-            <TrackList
-              tracks={filteredTracks}
-              currentTrack={currentTrack}
-              isPlaying={isPlaying}
-              sortBy={sortBy}
-              setSortBy={setSortBy}
-              sectionTitle={sectionTitle}
-              onPlayTrack={playTrackByIndex}
-              onToggleFavorite={handleToggleFavorite}
-              onDownloadTrack={handleDownloadTrack}
-              onDeleteTrack={handleDeleteTrack}
-              onClearAll={handleClearAll}
-            />
-          ) : (
-            <EmptyState
-              searchQuery={searchQuery}
-              activeTab={activeTab}
+        ) : (
+          /* User / Player View */
+          <div className="content-scrollable">
+            <HeroSection
+              onPlayAll={() =>
+                filteredTracks.length > 0
+                  ? playTrackByIndex(0)
+                  : showToast('Ijro etish uchun avval musiqa yuklang', 'info')
+              }
               onUploadClick={() => fileInputRef.current?.click()}
-              onGenerateSample={handleGenerateSample}
+              isPlaying={isPlaying}
+              analyserNode={analyserRef.current}
             />
-          )}
-        </div>
+
+            <Dropzone
+              onFilesDrop={handleFilesUpload}
+              onUploadClick={() => fileInputRef.current?.click()}
+            />
+
+            {filteredTracks.length > 0 ? (
+              <TrackList
+                tracks={filteredTracks}
+                currentTrack={currentTrack}
+                isPlaying={isPlaying}
+                sortBy={sortBy}
+                setSortBy={setSortBy}
+                sectionTitle={sectionTitle}
+                onPlayTrack={playTrackByIndex}
+                onToggleFavorite={handleToggleFavorite}
+                onDownloadTrack={handleDownloadTrack}
+                onDeleteTrack={handleDeleteTrack}
+                onClearAll={handleClearAll}
+              />
+            ) : (
+              <EmptyState
+                searchQuery={searchQuery}
+                activeTab={activeTab}
+                onUploadClick={() => fileInputRef.current?.click()}
+                onGenerateSample={handleGenerateSample}
+              />
+            )}
+          </div>
+        )}
       </main>
 
-      {/* Player Bar */}
+      {/* Hidden File Input for Backup Import */}
+      <input
+        type="file"
+        ref={backupFileInputRef}
+        accept=".json,application/json"
+        style={{ display: 'none' }}
+        onChange={handleBackupFileSelected}
+      />
+
+      {/* Persistent Bottom Player Bar */}
       <PlayerBar
         currentTrack={currentTrack}
         isPlaying={isPlaying}
@@ -699,7 +1043,7 @@ export default function App() {
         volume={volume}
         repeatMode={repeatMode}
         isShuffle={isShuffle}
-        playbackRate={rates[rateIndex]}
+        playbackRate={RATES[rateIndex]}
         onTogglePlayPause={togglePlayPause}
         onNext={playNext}
         onPrev={playPrev}
@@ -727,8 +1071,14 @@ export default function App() {
           }
         }}
         onProgress={() => {
-          if (audioRef.current && audioRef.current.buffered.length > 0 && audioRef.current.duration) {
-            const bufferedEnd = audioRef.current.buffered.end(audioRef.current.buffered.length - 1);
+          if (
+            audioRef.current &&
+            audioRef.current.buffered.length > 0 &&
+            audioRef.current.duration
+          ) {
+            const bufferedEnd = audioRef.current.buffered.end(
+              audioRef.current.buffered.length - 1
+            );
             setBufferedPercent((bufferedEnd / audioRef.current.duration) * 100);
           }
         }}
@@ -744,10 +1094,17 @@ export default function App() {
         onPause={() => setIsPlaying(false)}
       />
 
+      {/* Admin Auth PIN Modal */}
+      <AdminAuthModal
+        isOpen={isAuthModalOpen}
+        onClose={() => setIsAuthModalOpen(false)}
+        onSuccess={handleAuthSuccess}
+      />
+
       {/* Toasts */}
       <Toast toasts={toasts} />
 
-      {/* Modal */}
+      {/* Confirm Modal */}
       <ConfirmModal
         isOpen={modalState.isOpen}
         title={modalState.title}

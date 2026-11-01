@@ -26,6 +26,32 @@ export function formatDate(timestamp) {
   return `${day}.${month}.${year}`;
 }
 
+export function formatDateWithTime(timestamp) {
+  if (!timestamp) return '';
+  const date = new Date(timestamp);
+  const day = date.getDate().toString().padStart(2, '0');
+  const month = (date.getMonth() + 1).toString().padStart(2, '0');
+  const hours = date.getHours().toString().padStart(2, '0');
+  const minutes = date.getMinutes().toString().padStart(2, '0');
+  return `${day}.${month} ${hours}:${minutes}`;
+}
+
+export function formatTotalDuration(seconds) {
+  if (!seconds || isNaN(seconds) || seconds <= 0) return '0 daq';
+  const hours = Math.floor(seconds / 3600);
+  const remainingSecs = seconds % 3600;
+  const mins = Math.floor(remainingSecs / 60);
+  const secs = Math.floor(remainingSecs % 60);
+
+  if (hours > 0) {
+    return `${hours} soat ${mins} daq`;
+  }
+  if (mins > 0) {
+    return `${mins} daq ${secs} son`;
+  }
+  return `${secs} soniya`;
+}
+
 export function generateUUID() {
   return 'track_' + Date.now().toString(36) + '_' + Math.random().toString(36).substring(2, 9);
 }

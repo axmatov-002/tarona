@@ -110,6 +110,32 @@ class MusicDB {
     });
   }
 
+  async updateTrack(id, updates) {
+    await this.init();
+    const track = await this.getTrack(id);
+    if (!track) throw new Error('Disk topilmadi');
+
+    const updatedTrack = { ...track, ...updates };
+    await this.saveTrack(updatedTrack);
+    return updatedTrack;
+  }
+
+  async deleteMultiple(ids) {
+    if (!ids || ids.length === 0) return true;
+    await this.init();
+    return new Promise((resolve, reject) => {
+      const tx = this.db.transaction(STORE_NAME, 'readwrite');
+      const store = tx.objectStore(STORE_NAME);
+
+      ids.forEach((id) => {
+        store.delete(id);
+      });
+
+      tx.oncomplete = () => resolve(true);
+      tx.onerror = (e) => reject(e.target.error);
+    });
+  }
+
   async getTotalSize() {
     const tracks = await this.getAllTracks();
     let totalBytes = 0;
@@ -122,6 +148,55 @@ class MusicDB {
     }
     return totalBytes;
   }
+
+  async getStorageEstimate() {
+    if (navigator.storage && navigator.storage.estimate) {
+      try {
+        const estimate = await navigator.storage.estimate();
+        return {
+          usage: estimate.usage || 0,
+          quota: estimate.quota || 0,
+          percent: estimate.quota ? ((estimate.usage / estimate.quota) * 100).toFixed(1) : 0
+        };
+      } catch (e) {
+        console.warn('Storage estimate xatoligi:', e);
+      }
+    }
+    return { usage: 0, quota: 0, percent: 0 };
+  }
 }
 
 export const musicDB = new MusicDB();
+
+// Admin Activity Logger
+const LOGS_STORAGE_KEY = 'musiqa_admin_logs';
+export const adminLogger = {
+  getLogs() {
+    try {
+      const raw = localStorage.getItem(LOGS_STORAGE_KEY);
+      return raw ? JSON.parse(raw) : [];
+    } catch {
+      return [];
+    }
+  },
+  addLog(action, detail, type = 'info') {
+    try {
+      const logs = this.getLogs();
+      const newEntry = {
+        id: 'log_' + Date.now() + '_' + Math.random().toString(36).substring(2, 6),
+        action,
+        detail,
+        type, // 'info' | 'success' | 'warn' | 'danger'
+        timestamp: Date.now()
+      };
+      const updated = [newEntry, ...logs].slice(0, 50); // Keep last 50
+      localStorage.setItem(LOGS_STORAGE_KEY, JSON.stringify(updated));
+      return updated;
+    } catch {
+      return [];
+    }
+  },
+  clearLogs() {
+    localStorage.removeItem(LOGS_STORAGE_KEY);
+  }
+};
